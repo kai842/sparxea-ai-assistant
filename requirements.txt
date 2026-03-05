@@ -1,2 +1,5 @@
 python-dotenv
 pywin32
+presidio-analyzer
+presidio-anonymizer
+spacy
