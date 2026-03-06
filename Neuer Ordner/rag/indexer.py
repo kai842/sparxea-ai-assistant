@@ -39,14 +39,15 @@ class EAIndexer:
         return len(chunks)
 
     def index_elements(self, elements: list[dict]):
-        """
-        Indexes a list of EA elements into ChromaDB.
-        Real names are obfuscated — never stored in the vector DB.
-        """
         ids, embeddings, documents, metadatas = [], [], [], []
 
         for elem in elements:
-            token = self.obfuscator.obfuscate(elem["real_name"], kind=elem["kind"])
+            # Unique key = GUID, but deobfuscation returns real_name
+            token = self.obfuscator.obfuscate_with_label(
+                guid=elem["guid"],
+                real_name=elem["real_name"],
+                kind=elem["kind"],
+            )
 
             document = (
                 f"Type: {elem['ea_type']}. "
@@ -74,6 +75,7 @@ class EAIndexer:
                 metadatas=metadatas,
             )
             print(f"   Indexed {len(ids)} elements into ChromaDB.")
+
 
     def clear(self):
         """Removes all entries from the collection."""

@@ -6,17 +6,15 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from agent.config import get_llm
 from agent.tools import (
-    get_all_elements,
+    search_model,
     get_element_details,
-    get_connectors_for_element,
     get_package_contents,
     run_sql_query,
 )
 
 TOOLS = [
-    get_all_elements,
+    search_model,
     get_element_details,
-    get_connectors_for_element,
     get_package_contents,
     run_sql_query,
 ]
@@ -25,11 +23,18 @@ SYSTEM_PROMPT = SystemMessage(content="""
 You are an AI assistant for Sparx Enterprise Architect (EA).
 You help users analyze and understand their architecture models.
 
+You have access to the following tools:
+- search_model:         semantic + keyword search over all model elements
+- get_element_details:  full details for a specific element by name
+- get_package_contents: list all elements inside a package
+- run_sql_query:        execute a SQL SELECT on the EA database directly
+
 Important instructions:
-- Element identifiers like ELEMENT_001 are internal tokens.
-  Always refer to elements by their resolved real name, never as 'token'.
-- Be concise and precise in your answers.
-- When listing elements, use their name and type only.
+- Always use search_model first to find relevant elements.
+- Use get_element_details when the user asks about a specific element.
+- Never expose internal tokens (ELEMENT_001) in your answers.
+- Answer in the same language the user is writing in.
+- Be concise and precise.
 """)
 
 
