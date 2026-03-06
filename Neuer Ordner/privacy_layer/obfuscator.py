@@ -72,21 +72,3 @@ class Obfuscator:
             if token.startswith("ELEMENT_")
         )
 
-    def obfuscate_with_label(self, guid: str, real_name: str, kind: str = "element") -> str:
-        """
-        Obfuscates by GUID (unique), but stores real_name for deobfuscation.
-        This ensures unique tokens AND human-readable deobfuscation.
-        """
-        if guid in self._real_to_token:
-            return self._real_to_token[guid]
-
-        prefix = self.PREFIX_MAP.get(kind, "ELEMENT")
-        self._counters[kind] = self._counters.get(kind, 0) + 1
-        token = f"{prefix}_{self._counters[kind]:03d}"
-
-        # Key: GUID → Token (for uniqueness)
-        self._real_to_token[guid] = token
-        # Reverse: Token → real_name (for readable deobfuscation)
-        self._token_to_real[token] = real_name
-        return token
-
