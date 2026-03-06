@@ -63,3 +63,12 @@ class Obfuscator:
     def mapping_size(self) -> int:
         """Returns the number of currently mapped identifiers."""
         return len(self._real_to_token)
+    
+    @property
+    def element_count(self) -> int:
+        """Returns the number of mapped identifiers of kind 'element' only."""
+        return sum(
+            1 for token in self._token_to_real
+            if token.startswith("ELEMENT_")
+        )
+
