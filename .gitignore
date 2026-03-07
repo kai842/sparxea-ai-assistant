@@ -209,3 +209,15 @@ __marimo__/
 # ChromaDB
 .chromadb/
 .chromadb_test/
+
+# Temporäre Dateien (Thread-safe Confirmation Cache & Audit Log)
+pending_action.json
+ea_write_audit.log
+
+# Persistente UI-Konfiguration (enthält lokale Pfade, nicht committen)
+ui_config.json
+
+# EA Modelldateien (können sehr groß sein)
+*.qeax
+*.eap
+*.eapx
