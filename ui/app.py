@@ -7,7 +7,6 @@ import streamlit as st
 from agent.graph import build_graph
 from agent.privacy_middleware import PrivacyMiddleware
 from agent.tools import init_tools
-from privacy_layer.obfuscator import Obfuscator
 from rag.indexer import EAIndexer
 from rag.retriever import EARetriever
 from ea_connector import writer_com
@@ -15,8 +14,8 @@ from ea_connector import writer_com
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-UI_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "ui_config.json")
-CHROMA_DIR     = ".chromadb"
+UI_CONFIG_PATH      = os.path.join(os.path.dirname(__file__), "ui_config.json")
+CHROMA_DIR          = ".chromadb"
 PENDING_ACTION_FILE = "pending_action.json"
 
 # ---------------------------------------------------------------------------
@@ -28,9 +27,17 @@ def load_ui_config() -> dict:
             return json.load(f)
     return {"qeax_path": ""}
 
+
 def save_ui_config(config: dict) -> None:
     with open(UI_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
+
+
+def run_reindex(qeax_path: str) -> str:
+    count = st.session_state.indexer.reindex_all(qeax_path)
+    init_tools(st.session_state.retriever, qeax_path)
+    st.session_state.index_loaded = True
+    return f"✅ {count} elements indexed successfully."
 
 # ---------------------------------------------------------------------------
 # Page configuration
@@ -68,20 +75,11 @@ def init_agent():
     obfuscator = middleware.obfuscator
     indexer    = EAIndexer(obfuscator, persist_directory=CHROMA_DIR)
     retriever  = EARetriever(indexer, obfuscator)
-
-    st.session_state.middleware = middleware
-    st.session_state.indexer    = indexer
-    st.session_state.retriever  = retriever
+    st.session_state.middleware  = middleware
+    st.session_state.indexer     = indexer
+    st.session_state.retriever   = retriever
     st.session_state.agent_ready = True
 
-def run_reindex(qeax_path: str) -> str:
-    """Runs full re-index and returns a status message."""
-    indexer  = st.session_state.indexer
-    retriever = st.session_state.retriever
-    count = indexer.reindex_all(qeax_path)
-    init_tools(retriever, qeax_path)
-    st.session_state.index_loaded = True
-    return f"✅ {count} elements indexed successfully."
 
 if not st.session_state.agent_ready:
     with st.spinner("Initializing agent..."):
@@ -92,7 +90,6 @@ if not st.session_state.agent_ready:
 # ---------------------------------------------------------------------------
 with st.sidebar:
 
-    # ── Model path ──────────────────────────────────────────────────────────
     st.header("⚙️ Model Configuration")
 
     qeax_input = st.text_input(
@@ -103,7 +100,6 @@ with st.sidebar:
     )
 
     col1, col2 = st.columns(2)
-
     with col1:
         if st.button("💾 Save Path", use_container_width=True):
             st.session_state.ui_config["qeax_path"] = qeax_input
@@ -114,7 +110,7 @@ with st.sidebar:
         update_clicked = st.button(
             "🔄 Update Data",
             use_container_width=True,
-            help="Re-reads the entire EA model and rebuilds the vector index.",
+            help="Re-reads the EA model and rebuilds the vector index.",
         )
 
     if update_clicked:
@@ -126,15 +122,12 @@ with st.sidebar:
         else:
             with st.spinner("Re-indexing model..."):
                 try:
-                    msg = run_reindex(path)
-                    st.success(msg)
+                    st.success(run_reindex(path))
                 except Exception as e:
                     st.error(f"Indexing error:\n{e}")
 
-    if st.session_state.index_loaded:
-        st.caption("🟢 Index up to date")
-    else:
-        st.caption("🔴 No index loaded — click 'Update Data' to start.")
+    st.caption("🟢 Index up to date" if st.session_state.index_loaded else
+               "🔴 No index loaded — click 'Update Data' to start.")
 
     st.divider()
 
@@ -148,12 +141,8 @@ with st.sidebar:
         help="When enabled, element names are obfuscated before being sent to the LLM.",
     )
     middleware.enabled = privacy_enabled
-
-    if privacy_enabled:
-        st.caption("✅ Identifiers are obfuscated before reaching the LLM.")
-    else:
-        st.caption("⚠️ Real names are sent to the LLM directly.")
-
+    st.caption("✅ Identifiers are obfuscated before reaching the LLM."
+               if privacy_enabled else "⚠️ Real names are sent to the LLM directly.")
     st.metric("Mapped elements", middleware.obfuscator.element_count)
 
     st.divider()
@@ -162,10 +151,7 @@ with st.sidebar:
     st.header("🔍 Model Search")
 
     if st.session_state.index_loaded:
-        search_query = st.text_input(
-            "Search model elements:",
-            placeholder="e.g. safety block",
-        )
+        search_query = st.text_input("Search model elements:", placeholder="e.g. safety block")
         if search_query:
             results = st.session_state.retriever.hybrid_search(search_query, n_results=5)
             if results:
@@ -182,13 +168,15 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Chat controls ────────────────────────────────────────────────────────
     if st.button("🗑️ Clear chat history", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.middleware.clear_history()   # ← NEU
+        if os.path.exists(PENDING_ACTION_FILE):
+            os.remove(PENDING_ACTION_FILE)
         st.rerun()
 
 # ---------------------------------------------------------------------------
-# Index-not-loaded warning in main area
+# Index-not-loaded warning
 # ---------------------------------------------------------------------------
 if not st.session_state.index_loaded:
     st.warning(
@@ -217,71 +205,82 @@ if prompt := st.chat_input(
 
     with st.chat_message("assistant"):
 
-        # Mache den Input ganz sauber (entferne Punkte, Leerzeichen etc.)
         normalized = prompt.strip().lower().replace(".", "")
 
-        # ── Branch 1: YES — execute cached action directly, SKIP AGENT ──
+        # ── Branch 1: YES — execute ALL staged actions, SKIP AGENT ──────
         if normalized in ("yes", "ja", "y"):
             if os.path.exists(PENDING_ACTION_FILE):
                 with open(PENDING_ACTION_FILE, "r", encoding="utf-8") as f:
-                    action = json.load(f)
-                
-                # Datei sofort löschen
+                    actions = json.load(f)
                 os.remove(PENDING_ACTION_FILE)
-                
-                with st.status("Executing action...", expanded=True) as status:
-                    st.write(f"⚙️ Action: `{action['tool']}`")
-                    try:
-                        # De-obfuscate Werte, falls der Privacy-Layer aktiv ist
-                        obs = st.session_state.middleware.obfuscator
-                        def deobs(val): return obs.deobfuscate(val) if isinstance(val, str) else val
 
-                        if action["tool"] == "create_element":
-                            response = writer_com.create_element(
-                                deobs(action["name"]), deobs(action["ea_type"]),
-                                deobs(action["package_name"]), deobs(action["stereotype"]),
-                                deobs(action.get("notes", ""))
-                            )
-                        elif action["tool"] == "update_notes":
-                            response = writer_com.update_element_notes(
-                                deobs(action["element_name"]), deobs(action["new_notes"])
-                            )
-                        elif action["tool"] == "set_tag":
-                            response = writer_com.set_tagged_value(
-                                deobs(action["element_name"]), deobs(action["tag_name"]),
-                                deobs(action["tag_value"])
-                            )
-                        elif action["tool"] == "create_connector":
-                            response = writer_com.create_connector(
-                                deobs(action["source_name"]), deobs(action["target_name"]),
-                                deobs(action["connector_type"]), deobs(action["stereotype"]),
-                                deobs(action.get("name", ""))
-                            )
-                        else:
-                            response = f"❌ Unknown action type: {action['tool']}"
+                obs = st.session_state.middleware.obfuscator
+                def deobs(val): return obs.deobfuscate(val) if isinstance(val, str) else val
 
-                        response += "\n\n> 💡 Click **Update Data** in the sidebar to refresh the index."
-                    except Exception as e:
-                        response = f"❌ Error executing action: {e}"
+                results = []
+                with st.status(f"Executing {len(actions)} action(s)...", expanded=True) as status:
+                    for i, action in enumerate(actions, 1):
+                        st.write(f"⚙️ [{i}/{len(actions)}] `{action['tool']}`...")
+                        try:
+                            if action["tool"] == "create_element":
+                                r = writer_com.create_element(
+                                    deobs(action["name"]), deobs(action["ea_type"]),
+                                    deobs(action["package_name"]), deobs(action["stereotype"]),
+                                    deobs(action.get("notes", "")),
+                                )
+                            elif action["tool"] == "update_notes":
+                                r = writer_com.update_element_notes(
+                                    deobs(action["element_name"]), deobs(action["new_notes"]),
+                                )
+                            elif action["tool"] == "set_tag":
+                                r = writer_com.set_tagged_value(
+                                    deobs(action["element_name"]), deobs(action["tag_name"]),
+                                    deobs(action["tag_value"]),
+                                )
+                            elif action["tool"] == "create_connector":
+                                r = writer_com.create_connector(
+                                    deobs(action["source_name"]), deobs(action["target_name"]),
+                                    deobs(action["connector_type"]), deobs(action["stereotype"]),
+                                    deobs(action.get("name", "")),
+                                )
+                            else:
+                                r = f"❌ Unknown action type: {action['tool']}"
+                        except Exception as e:
+                            r = f"❌ Error: {e}"
+                        results.append(r)
+                        st.write(r)
+
+                    # ── Auto-reindex after all write actions ──────────────
+                    qeax_path = st.session_state.ui_config.get("qeax_path", "").strip()
+                    if qeax_path and os.path.exists(qeax_path):
+                        st.write("🔄 Auto-updating index...")
+                        try:
+                            msg = run_reindex(qeax_path)
+                            st.write(msg)
+                        except Exception as e:
+                            st.write(f"⚠️ Index update failed: {e}")
+                    else:
+                        st.write("⚠️ Auto-update skipped — no model path configured.")
+
                     status.update(label="Done!", state="complete", expanded=False)
+
+                response = "\n".join(results)
             else:
                 response = "⚠️ Nothing to confirm — no pending action found."
 
-        # ── Branch 2: NO — cancel, skip agent ───────────────────────────
+        # ── Branch 2: NO — cancel all staged actions ─────────────────────
         elif normalized in ("no", "nein", "n"):
             if os.path.exists(PENDING_ACTION_FILE):
                 os.remove(PENDING_ACTION_FILE)
-            response = "Action cancelled."
+            response = "All staged actions cancelled."
 
         # ── Branch 3: everything else — normal agent flow ────────────────
         else:
             with st.status("Thinking...", expanded=True) as status:
                 if middleware.enabled:
                     st.write("🔍 Privacy Layer enabled (identifiers are obfuscated).")
-                    
                 st.write("⚙️ Running AI Agent...")
                 response = middleware.chat(prompt)
-                
                 status.update(label="Done!", state="complete", expanded=False)
 
         st.markdown(response)

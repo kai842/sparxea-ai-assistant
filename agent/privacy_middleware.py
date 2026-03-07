@@ -1,7 +1,7 @@
 from privacy_layer.obfuscator import Obfuscator
 from privacy_layer.translator import Translator
 from privacy_layer.pii_handler import PiiHandler
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 
 
 class PrivacyMiddleware:
@@ -11,44 +11,48 @@ class PrivacyMiddleware:
     Outbound: obfuscates user input before it reaches the LLM.
     Inbound:  deobfuscates LLM responses before they reach the user.
 
-    Privacy layer can be disabled for non-sensitive models or testing.
+    Maintains full conversation history across turns within a session.
     """
 
     def __init__(self, graph, custom_terms: list[str] | None = None, enabled: bool = True):
-        self.graph = graph
-        self.obfuscator = Obfuscator()
-        self.translator = Translator(self.obfuscator)
+        self.graph       = graph
+        self.obfuscator  = Obfuscator()
+        self.translator  = Translator(self.obfuscator)
         self.pii_handler = PiiHandler(custom_terms=custom_terms or [])
-        self.enabled = enabled
+        self.enabled     = enabled
+        self._history: list[HumanMessage | AIMessage] = []
 
     def register_identifiers(self, identifiers: dict[str, str]):
-        """
-        Pre-registers known EA identifiers before a session starts.
-        identifiers: dict mapping real names to their kind,
-                     e.g. {"DriveControlModule_V4": "element"}
-        """
+        """Pre-registers known EA identifiers before a session starts."""
         for real_value, kind in identifiers.items():
             self.obfuscator.obfuscate(real_value, kind=kind)
+
+    def clear_history(self):
+        """Clears the conversation history (e.g. when user clears chat)."""
+        self._history = []
 
     def chat(self, user_message: str) -> str:
         """
         Sends a user message through the privacy layer and agent,
         returns the final deobfuscated response.
-
-        Args:
-            user_message: Raw input from the user (may contain real names).
+        Conversation history is maintained across turns.
         """
+        # Obfuscate input if privacy layer is active
         if self.enabled:
             processed_input = self.translator.obfuscate_text(user_message)
         else:
             processed_input = user_message
 
-        state = {"messages": [HumanMessage(content=processed_input)]}
+        # Build state: full history + current message
+        current_message = HumanMessage(content=processed_input)
+        state = {"messages": self._history + [current_message]}
+
         result = self.graph.invoke(state)
 
         last_message = result["messages"][-1]
-        raw_content = last_message.content
+        raw_content  = last_message.content
 
+        # Handle list-type content (e.g. Gemini multipart responses)
         if isinstance(raw_content, list):
             raw_response = " ".join(
                 part.get("text", "") if isinstance(part, dict) else str(part)
@@ -57,8 +61,15 @@ class PrivacyMiddleware:
         else:
             raw_response = str(raw_content)
 
+        # Deobfuscate response before returning to user
         if self.enabled:
-            return self.translator.deobfuscate_text(raw_response)
+            final_response = self.translator.deobfuscate_text(raw_response)
         else:
-            return raw_response
+            final_response = raw_response
 
+        # Store obfuscated exchange in history
+        # (LLM never sees real names — history stays obfuscated too)
+        self._history.append(current_message)
+        self._history.append(AIMessage(content=raw_response))
+
+        return final_response
